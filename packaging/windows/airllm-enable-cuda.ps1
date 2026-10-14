@@ -39,12 +39,18 @@ switch -Regex ($Variant) {
 }
 
 $torchVersion = (& $py -c "import importlib.metadata as m; print(m.version('torch').split('+')[0])").Trim()
-Write-Host "Installing torch==$torchVersion ($Variant) into $cudaSite ..."
+# torchvision (used by vision models' image processors) must be the build that matches torch.
+$visionVersion = $null
+try { $visionVersion = (& $py -c "import importlib.metadata as m; print(m.version('torchvision').split('+')[0])" 2>$null) }
+catch { $visionVersion = $null }   # Windows PowerShell 5.1 turns native stderr into an error under 'Stop'
+$packages = @("torch==$torchVersion")
+if ($LASTEXITCODE -eq 0 -and $visionVersion) { $packages += "torchvision==$("$visionVersion".Trim())" }
+Write-Host "Installing $($packages -join ' ') ($Variant) into $cudaSite ..."
 
 $tmp = "$cudaSite.new"
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $tmp
 $env:PIP_DISABLE_PIP_VERSION_CHECK = '1'; $env:PIP_NO_CACHE_DIR = '1'
-& $py -m pip install --no-warn-script-location --target $tmp --index-url "https://download.pytorch.org/whl/$Variant" "torch==$torchVersion"
+& $py -m pip install --no-warn-script-location --target $tmp --index-url "https://download.pytorch.org/whl/$Variant" @packages
 if ($LASTEXITCODE -ne 0) {
     Write-Error "pip failed. Check that '$Variant' offers torch $torchVersion (see https://pytorch.org/get-started/locally/) and that this prompt can write to $home_ (run as Administrator)."
     exit 1

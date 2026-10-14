@@ -17,6 +17,9 @@ Every package also ships **[AirLLM Studio](studio/)**, an Ollama-style layer on 
 
 * **AirLLM desktop app**: chat with history, streaming answers with a live layer meter, a model library that
   downloads from Hugging Face and prepares AirLLM's layers with progress, and settings (models folder, HF token, GPU).
+* **Projects**: group chats with shared instructions and text files that every chat in the project sees.
+* **Images and voice** for models that take them natively (e.g. images on Qwen3.8-27B); the attach and microphone
+  buttons appear only when the selected model can use them.
 * **`airllm` command line**: `airllm app`, `pull`, `run`, `list`, `ps`, `rm`, `stop`, `status`, `serve`.
 * **API server** on `127.0.0.1:11435`, compatible with the **Ollama** API (`/api/chat`, `/api/tags`, ...) and the
   **OpenAI** API (`/v1/chat/completions`), so tools like Open WebUI or any OpenAI SDK can use your models.

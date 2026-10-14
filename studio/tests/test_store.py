@@ -43,6 +43,12 @@ def _local_model(tmp_path):
 def test_local_import_runs_prepare_and_writes_manifest(home, tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(store_mod, "split_layers", lambda *a, **k: calls.append(a))
+
+    class TextOnly:
+        def set_layer_names_dict(self):
+            self.layer_names_dict = {"layer_prefix": "model.layers"}
+
+    monkeypatch.setattr(store_mod, "airllm_class_for", lambda *a, **k: TextOnly)
     st = ModelStore(lambda: tmp_path / "models", lambda: None)
     job = st.pull(str(_local_model(tmp_path)))
     events = list(job.events(timeout=0.1))
@@ -51,6 +57,7 @@ def test_local_import_runs_prepare_and_writes_manifest(home, tmp_path, monkeypat
     assert m.status == "ready" and m.source == "local" and m.context_length == 2048
     assert m.parameter_size == "2.0K"          # 4000 bytes of bf16
     assert calls and str(calls[0][0]).endswith("my-model")
+    assert m.capabilities == ["completion"]
 
 
 def test_failed_prepare_is_reported(home, tmp_path, monkeypatch):
