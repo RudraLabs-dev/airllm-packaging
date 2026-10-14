@@ -14,11 +14,13 @@ vendor: ${PKG_VENDOR}
 homepage: ${PKG_HOMEPAGE}
 license: Apache-2.0
 description: |-
-  Run 70B+ large language models on a single small GPU (AirLLM).
-  Self-contained build: bundles its own CPython, CPU-only PyTorch, transformers and
-  AirLLM under /opt/airllm, so it does not touch the system Python. Use
-  `airllm-python` to run scripts, and `sudo airllm-enable-cuda` to switch PyTorch to
-  a CUDA build. Packaged by RudraLabs from https://github.com/lyogavin/airllm
+  Run 70B+ large language models on a single small GPU (AirLLM), with AirLLM Studio.
+  Includes the AirLLM desktop app (chat, model library), the `airllm` command line
+  (serve, pull, run, list), an Ollama- and OpenAI-compatible API server and an
+  optional systemd service. Self-contained: bundles its own CPython, CPU-only
+  PyTorch, transformers and AirLLM under /opt/airllm, so it does not touch the
+  system Python. `sudo airllm-enable-cuda` switches PyTorch to a CUDA build.
+  Packaged by RudraLabs from https://github.com/lyogavin/airllm
 
 contents:
   - src: ${PAYLOAD_DIR}
@@ -30,6 +32,25 @@ contents:
   - src: /opt/airllm/bin/airllm-enable-cuda
     dst: /usr/bin/airllm-enable-cuda
     type: symlink
+  - src: /opt/airllm/bin/airllm
+    dst: /usr/bin/airllm
+    type: symlink
+  - src: ${PACKAGING_DIR}/linux/airllm.desktop
+    dst: /usr/share/applications/airllm.desktop
+    file_info:
+      mode: 0644
+  - src: ${STUDIO_WEB}/icon-256.png
+    dst: /usr/share/icons/hicolor/256x256/apps/airllm.png
+    file_info:
+      mode: 0644
+  - src: ${STUDIO_WEB}/icon.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/airllm.svg
+    file_info:
+      mode: 0644
+  - src: ${PACKAGING_DIR}/linux/airllm.service
+    dst: /usr/lib/systemd/system/airllm.service
+    file_info:
+      mode: 0644
   - dst: /var/lib/airllm
     type: dir
     file_info:
@@ -37,6 +58,7 @@ contents:
 
 scripts:
   postinstall: ${PACKAGING_DIR}/linux/scripts/postinstall.sh
+  preremove: ${PACKAGING_DIR}/linux/scripts/preremove.sh
   postremove: ${PACKAGING_DIR}/linux/scripts/postremove.sh
 
 overrides:
@@ -52,4 +74,4 @@ deb:
 rpm:
   compression: zstd
   group: Development/Languages
-  summary: Run 70B+ LLMs on a single small GPU (self-contained AirLLM)
+  summary: Run 70B+ LLMs on a single small GPU - AirLLM with desktop app, CLI and API server

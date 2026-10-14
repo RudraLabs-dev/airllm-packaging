@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "airllm-studio"
+version = "1.0.0"
+description = "AirLLM Studio: local server, CLI and desktop app for running large LLMs with AirLLM"
+readme = "README.md"
+license = "Apache-2.0"
+authors = [{ name = "RudraLabs", email = "rudralabs.dev@gmail.com" }]
+requires-python = ">=3.10"
+dependencies = [
+    "airllm",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "huggingface-hub>=0.23",
+    "pystray>=0.19; sys_platform == 'win32'",
+    "pillow>=10; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "httpx>=0.27"]
+
+[project.scripts]
+airllm = "airllm_studio.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/RudraLabs-dev/airllm-packaging"
+Issues = "https://github.com/RudraLabs-dev/airllm-packaging/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+airllm_studio = ["web/*", "web/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

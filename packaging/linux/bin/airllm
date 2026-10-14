@@ -1,0 +1,12 @@
+#!/bin/sh
+# AirLLM Studio command line: airllm serve | app | pull | run | list | ps | rm | stop | status
+# Same interpreter and CUDA overlay handling as airllm-python.
+AIRLLM_HOME_DIR=/opt/airllm
+CUDA_SITE=/var/lib/airllm/cuda-site
+
+if [ -d "$CUDA_SITE" ] && [ -z "${AIRLLM_FORCE_CPU:-}" ]; then
+    PYTHONPATH="$CUDA_SITE${PYTHONPATH:+:$PYTHONPATH}"
+    export PYTHONPATH
+fi
+
+exec "$AIRLLM_HOME_DIR/python/bin/python3" -m airllm_studio "$@"

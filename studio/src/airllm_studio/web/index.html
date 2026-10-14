@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AirLLM Studio</title>
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div class="app" id="app">
+    <aside class="sidebar" id="sidebar" aria-label="Conversations">
+      <div class="brand">
+        <img src="icon.svg" alt="" width="28" height="28">
+        <span>AirLLM</span>
+        <button class="icon-btn only-narrow" id="closeSidebar" aria-label="Close menu">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>
+        </button>
+      </div>
+      <button class="new-chat" id="newChat">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>
+        New chat
+      </button>
+      <nav class="chat-list" id="chatList" aria-label="Chat history"></nav>
+      <div class="side-nav">
+        <button class="nav-btn" data-view="models" id="navModels">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5.5h14M3 10h14M3 14.5h9"/></svg>
+          Models
+        </button>
+        <button class="nav-btn" data-view="settings" id="navSettings">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="2.6"/><path d="M10 2.5v2.2M10 15.3v2.2M2.5 10h2.2M15.3 10h2.2M4.7 4.7l1.6 1.6M13.7 13.7l1.6 1.6M4.7 15.3l1.6-1.6M13.7 6.3l1.6-1.6"/></svg>
+          Settings
+        </button>
+        <div class="device" id="deviceInfo" title="Compute device">
+          <span class="dot" id="deviceDot"></span><span id="deviceText">Connecting…</span>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <!-- Chat -->
+      <section class="view" id="view-chat" aria-label="Chat">
+        <header class="topbar">
+          <button class="icon-btn only-narrow" id="openSidebar" aria-label="Open menu">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
+          </button>
+          <label class="model-picker">
+            <span class="visually-hidden">Model</span>
+            <select id="modelSelect"></select>
+          </label>
+          <span class="engine-state" id="engineState"></span>
+        </header>
+        <div class="scroller" id="scroller">
+          <div class="thread" id="thread"></div>
+        </div>
+        <div class="composer-wrap">
+          <div class="meter" id="meter" hidden>
+            <div class="meter-track" id="meterTrack" aria-hidden="true"></div>
+            <div class="meter-label" id="meterLabel" role="status" aria-live="polite"></div>
+          </div>
+          <form class="composer" id="composer">
+            <label class="visually-hidden" for="prompt">Message</label>
+            <textarea id="prompt" rows="1" placeholder="Message" autocomplete="off"></textarea>
+            <button type="submit" class="send" id="sendBtn" aria-label="Send">
+              <svg viewBox="0 0 20 20" aria-hidden="true" class="i-send"><path d="M10 16V4M5 9l5-5 5 5"/></svg>
+              <svg viewBox="0 0 20 20" aria-hidden="true" class="i-stop"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5"/></svg>
+            </button>
+          </form>
+          <p class="composer-hint">Enter to send, Shift+Enter for a new line, Esc to stop.</p>
+        </div>
+      </section>
+
+      <!-- Models -->
+      <section class="view page" id="view-models" hidden aria-label="Models">
+        <header class="page-head">
+          <button class="icon-btn only-narrow" data-open-sidebar aria-label="Open menu">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
+          </button>
+          <h1>Models</h1>
+          <p class="sub" id="storageInfo"></p>
+        </header>
+        <div class="page-body">
+          <section class="block">
+            <h2>Installed</h2>
+            <div class="rows" id="installed"></div>
+          </section>
+          <section class="block">
+            <h2>Add a model</h2>
+            <p class="help">Any text-generation model on Hugging Face (safetensors), or a folder on this computer.
+              The first pull downloads the model and splits it into layers for AirLLM; after that it loads quickly.</p>
+            <form class="pull-form" id="pullForm">
+              <label class="visually-hidden" for="pullInput">Hugging Face model id or local folder</label>
+              <input id="pullInput" placeholder="Search Hugging Face, or paste an id like Qwen/Qwen3-8B" autocomplete="off" spellcheck="false">
+              <button type="submit" class="btn primary">Pull</button>
+            </form>
+            <h3 id="discoverTitle">Suggested</h3>
+            <div class="rows" id="discover"></div>
+          </section>
+        </div>
+      </section>
+
+      <!-- Settings -->
+      <section class="view page" id="view-settings" hidden aria-label="Settings">
+        <header class="page-head">
+          <button class="icon-btn only-narrow" data-open-sidebar aria-label="Open menu">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 6h14M3 10h14M3 14h14"/></svg>
+          </button>
+          <h1>Settings</h1>
+        </header>
+        <form class="page-body settings" id="settingsForm">
+          <section class="block">
+            <h2>Answers</h2>
+            <label class="field wide">System prompt
+              <textarea name="system_prompt" rows="3" placeholder="Optional instructions added to every new chat"></textarea>
+            </label>
+            <div class="grid">
+              <label class="field">Max answer length (tokens)<input name="max_new_tokens" type="number" min="1" max="32768"></label>
+              <label class="field">Temperature<input name="temperature" type="number" min="0" max="2" step="0.05"></label>
+              <label class="field">Top-p<input name="top_p" type="number" min="0.01" max="1" step="0.01"></label>
+              <label class="field">Context length (tokens)<input name="context_length" type="number" min="256" max="1048576" step="256"></label>
+            </div>
+          </section>
+          <section class="block">
+            <h2>Hardware</h2>
+            <div class="grid">
+              <label class="field">Run models on<select name="device" id="deviceSelect"></select></label>
+              <label class="field">Layer compression<select name="compression" id="compressionSelect">
+                <option value="none">None (full precision)</option>
+                <option value="8bit">8-bit</option>
+                <option value="4bit">4-bit (fastest)</option>
+              </select></label>
+              <label class="field">Unload an idle model after (minutes, 0 = never)<input name="keep_alive_minutes" type="number" min="0" max="10080"></label>
+            </div>
+            <p class="help" id="hardwareHelp"></p>
+          </section>
+          <section class="block">
+            <h2>Storage and Hugging Face</h2>
+            <label class="field wide">Models folder
+              <input name="models_dir" placeholder="Default" spellcheck="false">
+            </label>
+            <label class="check"><input type="checkbox" name="delete_original">
+              Delete the original download after a large model is prepared (halves disk use; pulling again re-downloads it)</label>
+            <label class="field wide">Hugging Face access token
+              <input name="hf_token" type="password" autocomplete="off" spellcheck="false" placeholder="hf_… (needed for gated models such as Llama)">
+            </label>
+            <p class="help" id="tokenState"></p>
+          </section>
+          <div class="save-bar">
+            <button type="submit" class="btn primary">Save changes</button>
+            <span class="save-state" id="saveState" role="status"></span>
+          </div>
+          <section class="block">
+            <h2>Connect other apps</h2>
+            <p class="help">AirLLM speaks the Ollama and OpenAI APIs, so tools built for either can use your models.</p>
+            <div class="copy-rows" id="endpoints"></div>
+          </section>
+          <section class="block">
+            <h2>About</h2>
+            <dl class="about" id="about"></dl>
+            <div class="actions">
+              <button type="button" class="btn" data-open="models">Open models folder</button>
+              <button type="button" class="btn" data-open="logs">Open logs</button>
+              <a class="btn" href="/docs" target="_blank" rel="noopener">API reference</a>
+              <button type="button" class="btn danger" id="quitBtn">Quit AirLLM</button>
+            </div>
+          </section>
+        </form>
+      </section>
+    </main>
+  </div>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -4,3 +4,6 @@
 /pkgs/
 /src/
 __pycache__/
+/studio/build/
+*.egg-info/
+.pytest_cache/

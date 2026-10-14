@@ -1,0 +1,38 @@
+# AirLLM Studio as a system service (API + web UI), for servers and shared machines.
+# Desktop users don't need it: the AirLLM app starts a personal server on demand.
+#
+#   sudo systemctl enable --now airllm
+#   sudo systemctl edit airllm      # e.g. Environment=AIRLLM_HOST=0.0.0.0:11435 and AIRLLM_API_KEY=...
+#
+# Models, settings and chats live in /var/lib/airllm-server (owned by a dynamic service user).
+[Unit]
+Description=AirLLM Studio server (Ollama/OpenAI-compatible API and web UI)
+Documentation=https://github.com/RudraLabs-dev/airllm-packaging
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=airllm-server
+Environment=AIRLLM_HOME=%S/airllm-server
+Environment=HOME=%S/airllm-server
+Environment=AIRLLM_HOST=127.0.0.1:11435
+ExecStart=/usr/bin/airllm serve
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+# Hardening. GPUs stay reachable: /dev/nvidia* are world-accessible on standard driver installs.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

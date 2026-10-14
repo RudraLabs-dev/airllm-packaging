@@ -33,6 +33,8 @@ VersionInfoDescription=AirLLM installer
 DefaultDirName={autopf}\AirLLM
 DefaultGroupName=AirLLM
 DisableProgramGroupPage=yes
+SetupIconFile={#SourceDir}\airllm.ico
+UninstallDisplayIcon={app}\airllm.ico
 LicenseFile={#SourceDir}\LICENSE.txt
 OutputDir={#OutputDir}
 OutputBaseFilename=AirLLM-{#AppVersion}-setup-x64
@@ -55,14 +57,25 @@ LZMANumBlockThreads=4
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "addtopath"; Description: "Add AirLLM to PATH (airllm-python, airllm-enable-cuda)"; GroupDescription: "Command line:"
+Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked
+Name: "startup"; Description: "Start AirLLM in the background when I sign in (tray icon, API on port 11435)"; GroupDescription: "Shortcuts:"; Flags: unchecked
+Name: "addtopath"; Description: "Add AirLLM to PATH (airllm, airllm-python, airllm-enable-cuda)"; GroupDescription: "Command line:"
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
+Name: "{group}\AirLLM"; Filename: "{app}\python\pythonw.exe"; Parameters: "-m airllm_studio app"; WorkingDir: "{app}"; IconFilename: "{app}\airllm.ico"; Comment: "Chat with large language models on this computer"
+Name: "{autodesktop}\AirLLM"; Filename: "{app}\python\pythonw.exe"; Parameters: "-m airllm_studio app"; WorkingDir: "{app}"; IconFilename: "{app}\airllm.ico"; Tasks: desktopicon
+Name: "{autostartup}\AirLLM"; Filename: "{app}\python\pythonw.exe"; Parameters: "-m airllm_studio app --background"; WorkingDir: "{app}"; IconFilename: "{app}\airllm.ico"; Tasks: startup
 Name: "{group}\AirLLM Command Prompt"; Filename: "{cmd}"; Parameters: "/k ""{app}\airllm-shell.cmd"""; WorkingDir: "{userdocs}"
 Name: "{group}\Uninstall AirLLM"; Filename: "{uninstallexe}"
+
+[Run]
+Filename: "{app}\python\pythonw.exe"; Parameters: "-m airllm_studio app"; WorkingDir: "{app}"; Description: "Open AirLLM"; Flags: postinstall nowait skipifsilent
+
+[UninstallRun]
+Filename: "{app}\python\python.exe"; Parameters: "-m airllm_studio stop --quiet"; Flags: runhidden waituntilterminated; RunOnceId: "StopAirLLM"
 
 [UninstallDelete]
 ; Files created after install: the optional CUDA overlay and runtime .pyc caches.
@@ -107,6 +120,18 @@ begin
   Delete(Paths, P, Length(Dir) + 1);
   if Length(Paths) >= 2 then Paths := Copy(Paths, 2, Length(Paths) - 2) else Paths := '';
   RegWriteExpandStringValue(EnvRoot, EnvKey, 'Path', Paths);
+end;
+
+// Stop a running AirLLM server (tray app or `airllm serve`) so an upgrade can replace its files.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+  Py: String;
+begin
+  Py := ExpandConstant('{app}\python\python.exe');
+  if FileExists(Py) then
+    Exec(Py, '-m airllm_studio stop --quiet', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := '';
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

@@ -53,6 +53,7 @@ fi
 
 export PKG_VERSION="$version" PKG_RELEASE="$release" NFPM_ARCH="$nfpm_arch"
 PAYLOAD_DIR="$(cd "$payload" && pwd)"; export PAYLOAD_DIR
+STUDIO_WEB="$(cd "$PACKAGING_DIR/../studio/src/airllm_studio/web" && pwd)"; export STUDIO_WEB
 
 # nfpm only expands env vars in a few fields, so render the whole config up front.
 # Fails loudly on any ${VAR} that is not set.

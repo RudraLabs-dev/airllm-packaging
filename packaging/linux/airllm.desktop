@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=AirLLM
+GenericName=Local AI chat
+Comment=Chat with large language models on your own computer
+Exec=/usr/bin/airllm app
+Icon=airllm
+Terminal=false
+Categories=Development;Utility;
+Keywords=LLM;AI;chat;Ollama;Hugging Face;
+StartupNotify=true
