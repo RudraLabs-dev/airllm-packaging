@@ -524,8 +524,12 @@ def friendly_error(exc: Exception) -> str:
                 "Hugging Face token in Settings.")
     if name in ("RepositoryNotFoundError", "RevisionNotFoundError"):
         return "Model not found on Hugging Face (check the name, or add a token for private repos)."
-    if name in ("LocalEntryNotFoundError", "ConnectionError", "OfflineModeIsEnabled"):
-        return "Could not reach Hugging Face. Check your internet connection or proxy."
+    if "CERTIFICATE_VERIFY_FAILED" in text or name in ("SSLError", "SSLCertVerificationError"):
+        return ("Secure connection to Hugging Face failed: the system has no trusted CA certificates "
+                "(install the ca-certificates package) or a proxy is intercepting TLS.")
+    if name in ("LocalEntryNotFoundError", "ConnectionError", "OfflineModeIsEnabled", "ProxyError",
+                "ConnectError", "ConnectTimeout", "ReadTimeout"):
+        return f"Could not reach Hugging Face ({text}). Check your internet connection or proxy."
     if "No space left" in text or name == "NotEnoughSpaceException":
         return "Not enough disk space. Free some space or move the models folder in Settings."
     return f"{name}: {text}"

@@ -40,6 +40,7 @@ for f in /usr/share/applications/airllm.desktop /usr/lib/systemd/system/airllm.s
          /usr/share/icons/hicolor/256x256/apps/airllm.png; do
     [ -f "$f" ] || { echo "FAIL: $f missing" >&2; exit 1; }
 done
+export AIRLLM_E2E_ANNOTATE=1      # failures become annotations on the CI job
 airllm-python -I /packaging/tests/studio_e2e.py --airllm /usr/bin/airllm
 if [ -n "$hf_model" ]; then
     echo "=== AirLLM Studio with $hf_model from Hugging Face"

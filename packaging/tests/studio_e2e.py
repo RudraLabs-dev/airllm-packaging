@@ -64,10 +64,17 @@ def call(url: str, path: str, body: dict | None = None, method: str | None = Non
     return urllib.request.urlopen(req, timeout=timeout)
 
 
+def annotate(message: str) -> None:
+    """Surface a failure as a GitHub Actions annotation (readable through the checks API)."""
+    if os.environ.get("GITHUB_ACTIONS") or os.environ.get("AIRLLM_E2E_ANNOTATE"):
+        text = message.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+        print(f"::error title=AirLLM Studio E2E::{text}", flush=True)
+
+
 def check(cond: bool, what: str) -> None:
     print(("PASS  " if cond else "FAIL  ") + what, flush=True)
     if not cond:
-        raise SystemExit(1)
+        raise SystemExit(f"FAIL: {what}")
 
 
 def main() -> int:
@@ -143,6 +150,11 @@ def main() -> int:
         check(server.returncode is not None, "airllm stop shut the server down")
         print("STUDIO E2E PASSED")
         return 0
+    except BaseException as exc:
+        log.flush()
+        tail = (work / "server.log").read_text(errors="replace")[-2500:]
+        annotate(f"{type(exc).__name__}: {exc}\n--- server log tail ---\n{tail}")
+        raise
     finally:
         if server.poll() is None:
             server.terminate()

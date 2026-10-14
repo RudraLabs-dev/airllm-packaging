@@ -61,13 +61,16 @@ scripts:
   preremove: ${PACKAGING_DIR}/linux/scripts/preremove.sh
   postremove: ${PACKAGING_DIR}/linux/scripts/postremove.sh
 
+# ca-certificates: model downloads use HTTPS and the bundled HTTP client trusts the system CA store.
 overrides:
   deb:
     depends:
       - libc6 (>= 2.28)
+      - ca-certificates
   rpm:
     depends:
       - glibc >= 2.28
+      - ca-certificates
 
 deb:
   compression: zstd
