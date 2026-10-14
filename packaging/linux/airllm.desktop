@@ -6,6 +6,9 @@ Comment=Chat with large language models on your own computer
 Exec=/usr/bin/airllm app
 Icon=airllm
 Terminal=false
-Categories=Development;Utility;
+Categories=Utility;
 Keywords=LLM;AI;chat;Ollama;Hugging Face;
 StartupNotify=true
+# Ties the app window to this entry so docks show the AirLLM icon (see airllm_studio/desktop.py):
+# X11 windows match by WM_CLASS "airllm", native-Wayland Chrome/Chromium windows by this app_id.
+StartupWMClass=chrome-127.0.0.1__-Default

@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
 import threading
 import webbrowser
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 from .client import Client, ClientError, ensure_server
 from .config import data_dir, logs_dir, parse_host
@@ -18,6 +20,61 @@ WEB_DIR = Path(__file__).parent / "web"
 
 CHROMIUM_LINUX = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
                   "microsoft-edge", "microsoft-edge-stable", "brave-browser"]
+
+# Linux docks (GNOME, KDE) pick a window's icon by matching it to a .desktop file, so the app
+# window has to identify itself as "airllm" (packaging/linux/airllm.desktop):
+#  - X11 / XWayland: Chromium sets WM_CLASS to the --class value -> desktop id "airllm".
+#  - native Wayland: --class is ignored for --app windows; Chromium derives the xdg app_id as
+#    "<exe>-<host>_<path>-<profile>" with path characters replaced by "_", e.g.
+#    "chrome-127.0.0.1__-Default". airllm.desktop lists that value as StartupWMClass.
+#    Only Chrome and Chromium use the "chrome" prefix, so other Chromium browsers run through
+#    XWayland, where --class applies.
+WM_CLASS = "airllm"
+WAYLAND_NATIVE_PREFIX = "chrome"
+
+
+def chromium_app_id(url: str, profile: str = "Default", exe: str = WAYLAND_NATIVE_PREFIX) -> str:
+    """The Wayland app_id Chromium gives an --app=<url> window (see WM_CLASS notes above)."""
+    parsed = urlparse(url)
+    name = f"{exe}-{parsed.hostname}_{parsed.path or '/'}-{profile}"
+    return re.sub(r'[/\\:*?"<>| ]', "_", name)
+
+
+def _window_url(url: str) -> str:
+    """Use one fixed loopback host, so the Wayland app_id (and the dock icon) never changes."""
+    parsed = urlparse(url)
+    if parsed.hostname == "localhost":
+        parsed = parsed._replace(netloc=f"127.0.0.1:{parsed.port}" if parsed.port else "127.0.0.1")
+    return urlunparse(parsed._replace(path=parsed.path or "/"))
+
+
+def _is_native_wayland_capable(browser: str) -> bool:
+    name = Path(os.path.realpath(browser)).name.lower()
+    return any(key in name for key in ("chrome", "chromium")) and "edge" not in name
+
+
+def _profile_dir(browser: str) -> Path:
+    """Snap-packaged browsers (Ubuntu's chromium) cannot write to hidden folders like ~/.airllm."""
+    if os.path.realpath(browser).startswith("/snap/") or browser.startswith("/snap/"):
+        snap = Path(browser).name.split(".")[0] or "chromium"
+        return Path.home() / "snap" / snap / "common" / "airllm-window"
+    return data_dir() / "window-profile"
+
+
+def window_command(browser: str, url: str, platform: str | None = None,
+                   environ: dict | None = None) -> list[str]:
+    """Command line that opens the UI as a standalone app window in a Chromium-based browser."""
+    platform = platform or sys.platform
+    environ = os.environ if environ is None else environ
+    profile = _profile_dir(browser) if platform.startswith("linux") else data_dir() / "window-profile"
+    args = [browser, f"--app={_window_url(url)}", f"--user-data-dir={profile}", "--no-first-run",
+            "--no-default-browser-check", "--window-size=1280,860"]
+    if platform.startswith("linux"):
+        args.append(f"--class={WM_CLASS}")
+        wayland = bool(environ.get("WAYLAND_DISPLAY")) or environ.get("XDG_SESSION_TYPE") == "wayland"
+        if wayland and not _is_native_wayland_capable(browser):
+            args.append("--ozone-platform=x11")
+    return args
 
 
 def _find_windows_edge() -> str | None:
@@ -38,9 +95,7 @@ def open_window(url: str) -> None:
     elif sys.platform.startswith("linux"):
         browser = next((shutil.which(b) for b in CHROMIUM_LINUX if shutil.which(b)), None)
     if browser:
-        profile = data_dir() / "window-profile"
-        args = [browser, f"--app={url}", f"--user-data-dir={profile}", "--no-first-run",
-                "--no-default-browser-check", "--window-size=1280,860"]
+        args = window_command(browser, url)
         try:
             kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
             if sys.platform != "win32":
