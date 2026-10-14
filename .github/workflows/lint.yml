@@ -61,3 +61,24 @@ jobs:
           today="$(date -u +%Y%m%d)"
           check 4.0.0    false "4.0.0+git$today.abcdef1" "v4.0.0+git$today.abcdef1-1"
           echo "compute-version.sh OK"
+
+  studio:
+    name: AirLLM Studio tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up a test environment (no torch needed)
+        run: |
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install -q fastapi uvicorn huggingface-hub pytest httpx ruff
+          /tmp/venv/bin/pip install -q --no-deps ./studio
+      - name: ruff
+        run: /tmp/venv/bin/ruff check --select E,F,W,B --line-length 120 --target-version py310 studio packaging/tests
+      - name: pytest
+        run: /tmp/venv/bin/python -m pytest -q studio/tests
+      - name: Web UI script parses
+        run: node --check studio/src/airllm_studio/web/app.js
+

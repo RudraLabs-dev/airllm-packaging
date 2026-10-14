@@ -13,16 +13,30 @@ and publishes installable packages on the [Releases](https://github.com/RudraLab
 Every package is **self-contained**: it bundles its own CPython ([python-build-standalone](https://github.com/astral-sh/python-build-standalone)),
 CPU-only PyTorch, transformers and AirLLM, so it never touches the system Python and works the same on every distro.
 
+Every package also ships **[AirLLM Studio](studio/)**, an Ollama-style layer on top of AirLLM:
+
+* **AirLLM desktop app**: chat with history, streaming answers with a live layer meter, a model library that
+  downloads from Hugging Face and prepares AirLLM's layers with progress, and settings (models folder, HF token, GPU).
+* **`airllm` command line**: `airllm app`, `pull`, `run`, `list`, `ps`, `rm`, `stop`, `status`, `serve`.
+* **API server** on `127.0.0.1:11435`, compatible with the **Ollama** API (`/api/chat`, `/api/tags`, ...) and the
+  **OpenAI** API (`/v1/chat/completions`), so tools like Open WebUI or any OpenAI SDK can use your models.
+
 ## Using the packages
 
 ```sh
-sudo apt install ./airllm_4.0.0-1_amd64.deb        # Debian / Ubuntu
-sudo dnf install ./airllm-4.0.0-1.x86_64.rpm       # Fedora / RHEL / Rocky / Alma
+sudo apt install ./airllm_4.0.0-2_amd64.deb        # Debian / Ubuntu
+sudo dnf install ./airllm-4.0.0-2.x86_64.rpm       # Fedora / RHEL / Rocky / Alma
 
-airllm-python my_script.py                         # the bundled interpreter
-airllm-python -c "from airllm import AutoModel"
+airllm app                                         # desktop app ("AirLLM" in the app menu too)
+airllm pull Qwen/Qwen3-8B                          # download + prepare a model
+airllm run Qwen/Qwen3-8B "Explain AirLLM"          # chat in the terminal
+airllm-python my_script.py                         # the bundled interpreter, for your own code
 cat /opt/airllm/share/airllm/BUILDINFO             # exact source commit, torch, python versions
 ```
+
+**As a server.** `sudo systemctl enable --now airllm` runs the API and web UI as a hardened system service
+(data in `/var/lib/airllm-server`). To reach it from other machines, `sudo systemctl edit airllm` and set
+`Environment=AIRLLM_HOST=0.0.0.0:11435` and `Environment=AIRLLM_API_KEY=<secret>`.
 
 **NVIDIA GPU.** The packages ship CPU-only PyTorch so they stay well under GitHub's 2 GiB asset limit.
 Switch to a CUDA build once after installing:
@@ -38,8 +52,10 @@ The CUDA wheels go to `/var/lib/airllm/cuda-site` (Windows: `<install dir>\cuda-
 Package upgrades never overwrite it; re-run the command after an upgrade that changes the torch version (the installer reminds you).
 Older GPUs or drivers may need an older `cu12x` variant.
 
-**Windows.** Run the installer (all users or just you), open a new terminal or the *AirLLM Command Prompt* shortcut, then use
-`airllm-python` and `airllm-enable-cuda` as above (from an Administrator prompt if installed under Program Files).
+**Windows.** Run the installer (all users or just you) and open **AirLLM** from the Start menu; it runs in the
+tray (right-click to open the models folder or quit). Optional installer tasks add a desktop shortcut and start
+AirLLM at sign-in. `airllm`, `airllm-python` and `airllm-enable-cuda` work in a new terminal (the last one from an
+Administrator prompt if installed under Program Files).
 Silent install: `AirLLM-…-setup-x64.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART [/DIR=D:\AirLLM] [/CURRENTUSER]`.
 
 **Verify a download.** `sha256sum -c SHA256SUMS`, and `gh attestation verify <file> --repo RudraLabs-dev/airllm-packaging`
@@ -51,9 +67,9 @@ Silent install: `AirLLM-…-setup-x64.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTA
 watch-upstream.yml (daily 08:07 IST)          release.yml (manual / called / PR)
  ├─ sync-fork: fork main  ← upstream main      prepare ── resolve ref → checkout source → versions → wheel + sdist
  └─ new upstream tag? ──────────────────────▶   ├─ linux (x86_64, aarch64): payload in /opt/airllm → nfpm → .deb + .rpm
-                                                 │    └─ test-linux: install / smoke test / uninstall on
+                                                 │    └─ test-linux: install / smoke + Studio E2E / uninstall on
                                                  │       Debian 12, 13 · Ubuntu 22.04, 24.04 · Fedora · Rocky 9 · Alma 8
-                                                 ├─ windows: payload → Inno Setup .exe + .zip → silent install test
+                                                 ├─ windows: payload → Inno Setup .exe + .zip → silent install + Studio E2E
                                                  └─ release: SHA256SUMS + provenance → GitHub Release (draft → public)
 ```
 
@@ -73,7 +89,8 @@ packaging/versions.env           every pin: Python, PyTorch index, nfpm, CUDA de
 packaging/linux/                 build-payload.sh, build-packages.sh, nfpm.yaml, launchers, maintainer scripts
 packaging/windows/               build-payload.ps1, airllm.iss (Inno Setup), .cmd/.ps1 launchers
 packaging/ci/                    ref/version resolution, container install test
-packaging/tests/smoke_test.py    run on every payload and every installed package
+packaging/tests/                 smoke_test.py + studio_e2e.py, run on every payload and every installed package
+studio/                          AirLLM Studio: desktop app, CLI, Ollama/OpenAI-compatible server (Python + web UI)
 .github/workflows/               release.yml, watch-upstream.yml, lint.yml
 scripts/dev-setup.sh             contributor clone of the fork with upstream wired up
 ```
@@ -82,7 +99,8 @@ scripts/dev-setup.sh             contributor clone of the fork with upstream wir
 
 ```sh
 pipx run build --wheel --outdir dist /path/to/airllm/air_llm
-sudo packaging/linux/build-payload.sh --wheel dist/airllm-*.whl          # → /opt/airllm
+pipx run build --wheel --outdir dist studio
+sudo packaging/linux/build-payload.sh --wheel dist/airllm-*.whl --studio-wheel dist/airllm_studio-*.whl   # → /opt/airllm
 packaging/linux/build-packages.sh --version 4.0.0 --release 1 --out out   # → out/*.deb, out/*.rpm
 ```
 

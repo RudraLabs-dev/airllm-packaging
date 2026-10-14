@@ -1,6 +1,7 @@
 name: Build & release packages
 
-# Takes AirLLM source (upstream or the org fork), builds self-contained packages and publishes them:
+# Takes AirLLM source (upstream or the org fork) plus AirLLM Studio (studio/: desktop app, `airllm`
+# CLI, Ollama/OpenAI-compatible server), builds self-contained packages and publishes them:
 #   Linux x86_64 + aarch64 : .deb (Debian/Ubuntu) and .rpm (Fedora/RHEL/Rocky/Alma)
 #   Windows x64            : Inno Setup installer (.exe) and portable .zip
 # Every package is install-tested on real distros / a clean Windows runner before release.
@@ -39,6 +40,7 @@ on:
   pull_request:
     paths:
       - "packaging/**"
+      - "studio/**"
       - ".github/workflows/release.yml"
 
 permissions:
@@ -58,6 +60,7 @@ jobs:
       ref: ${{ steps.resolve.outputs.ref }}
       sha: ${{ steps.resolve.outputs.sha }}
       airllm_version: ${{ steps.wheel.outputs.airllm_version }}
+      studio_version: ${{ steps.wheel.outputs.studio_version }}
       pkg_version: ${{ steps.version.outputs.pkg_version }}
       pkg_release: ${{ steps.version.outputs.pkg_release }}
       tag_version: ${{ steps.version.outputs.tag_version }}
@@ -93,16 +96,26 @@ jobs:
           PKG_RELEASE: ${{ inputs.pkg_release || '1' }}
         run: packaging/ci/compute-version.sh src | tee -a "$GITHUB_OUTPUT"
 
-      - name: Build wheel and sdist
+      - name: AirLLM Studio unit tests
+        run: |
+          python3 -m venv /tmp/studio-venv
+          /tmp/studio-venv/bin/pip install -q fastapi uvicorn huggingface-hub pytest httpx
+          /tmp/studio-venv/bin/pip install -q --no-deps ./studio
+          /tmp/studio-venv/bin/python -m pytest -q studio/tests
+
+      - name: Build wheels
         id: wheel
         run: |
           # Same step as upstream's PyPI workflow: ship the top-level README inside the package.
           cp src/README.md src/air_llm/README.md
           pipx run --spec build==1.6.1 pyproject-build --wheel --sdist --outdir dist src/air_llm
+          pipx run --spec build==1.6.1 pyproject-build --wheel --outdir dist studio
           cp src/LICENSE dist/LICENSE-airllm.txt
-          wheel="$(ls dist/*.whl)"
+          wheel="$(ls dist/airllm-*.whl)"
           version="$(basename "$wheel" | cut -d- -f2)"
           echo "airllm_version=$version" >> "$GITHUB_OUTPUT"
+          studio="$(ls dist/airllm_studio-*.whl)"
+          echo "studio_version=$(basename "$studio" | cut -d- -f2)" >> "$GITHUB_OUTPUT"
           ls -l dist
 
       - name: Summary
@@ -152,7 +165,8 @@ jobs:
       - name: Build payload in /opt/airllm
         run: |
           sudo --preserve-env=PKG_VERSION,AIRLLM_SOURCE_REPO,AIRLLM_SOURCE_REF,AIRLLM_SOURCE_SHA \
-            packaging/linux/build-payload.sh --arch "${{ matrix.arch }}" --wheel "$(ls dist/*.whl)"
+            packaging/linux/build-payload.sh --arch "${{ matrix.arch }}" \
+              --wheel "$(ls dist/airllm-*.whl)" --studio-wheel "$(ls dist/airllm_studio-*.whl)"
 
       - name: Build .deb and .rpm
         run: packaging/linux/build-packages.sh --version "$PKG_VERSION" --release "$PKG_RELEASE" --arch "${{ matrix.arch }}" --out out
@@ -180,7 +194,9 @@ jobs:
           - rockylinux/rockylinux:9
           - almalinux:8          # oldest supported: glibc 2.28
         include:
-          - { arch: aarch64, image: ubuntu:24.04 }
+          # These also pull a real model from Hugging Face through the installed server.
+          - { arch: x86_64, image: ubuntu:24.04, hf_model: HuggingFaceTB/SmolLM2-135M-Instruct }
+          - { arch: aarch64, image: ubuntu:24.04, hf_model: HuggingFaceTB/SmolLM2-135M-Instruct }
           - { arch: aarch64, image: rockylinux/rockylinux:9 }
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 30
@@ -194,14 +210,15 @@ jobs:
           name: packages-linux-${{ matrix.arch }}
           path: pkgs
 
-      - name: Install, smoke test, uninstall
+      - name: Install, smoke test, Studio end-to-end, uninstall
         env:
           IMAGE: ${{ matrix.image }}
           EXPECT: ${{ needs.prepare.outputs.airllm_version }}
+          HF_MODEL: ${{ matrix.hf_model }}
         run: |
           docker run --rm \
             -v "$PWD/pkgs:/pkgs:ro" -v "$PWD/packaging:/packaging:ro" \
-            "$IMAGE" sh /packaging/ci/test-install.sh /pkgs "$EXPECT"
+            "$IMAGE" sh /packaging/ci/test-install.sh /pkgs "$EXPECT" "$HF_MODEL"
 
   windows:
     name: Windows x64 (installer + zip)
@@ -230,7 +247,8 @@ jobs:
 
       - name: Build payload
         run: |
-          ./packaging/windows/build-payload.ps1 -Wheel (Get-Item dist/*.whl).FullName `
+          ./packaging/windows/build-payload.ps1 -Wheel (Get-Item dist/airllm-*.whl).FullName `
+            -StudioWheel (Get-Item dist/airllm_studio-*.whl).FullName `
             -License dist/LICENSE-airllm.txt -Stage build/AirLLM -PackageVersion $env:WIN_VERSION
 
       - name: Locate or install Inno Setup 6
@@ -264,6 +282,12 @@ jobs:
           & "$dir\airllm-python.cmd" packaging\tests\smoke_test.py --expect-version $env:AIRLLM_VERSION
           & "$dir\airllm-enable-cuda.cmd" status
           if ([Environment]::GetEnvironmentVariable('Path', 'Machine') -notlike "*$dir*") { throw "installer did not add $dir to PATH" }
+          $lnk = "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\AirLLM\AirLLM.lnk"
+          if (-not (Test-Path $lnk)) { throw "Start menu shortcut missing: $lnk" }
+
+          # AirLLM Studio through the installed launcher: tiny offline model, then a real HF model.
+          & "$dir\python\python.exe" -I packaging\tests\studio_e2e.py --airllm "$dir\airllm.cmd"
+          & "$dir\python\python.exe" -I packaging\tests\studio_e2e.py --airllm "$dir\airllm.cmd" --model HuggingFaceTB/SmolLM2-135M-Instruct
 
           $u = Start-Process "$dir\unins000.exe" -Wait -PassThru -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
           if ($u.ExitCode -ne 0) { throw "uninstaller exited with $($u.ExitCode)" }
@@ -294,6 +318,7 @@ jobs:
       TAG: ${{ needs.prepare.outputs.release_tag }}
       PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
       AIRLLM_VERSION: ${{ needs.prepare.outputs.airllm_version }}
+      STUDIO_VERSION: ${{ needs.prepare.outputs.studio_version }}
       PKG_RELEASE: ${{ needs.prepare.outputs.pkg_release }}
       SOURCE_REPO: ${{ needs.prepare.outputs.source_repo }}
       SOURCE_REF: ${{ needs.prepare.outputs.ref }}
@@ -322,6 +347,7 @@ jobs:
           {
             echo "AirLLM **$AIRLLM_VERSION**, package revision $PKG_RELEASE — built from [\`$SOURCE_REPO@$SOURCE_REF\`](https://github.com/$SOURCE_REPO/tree/$SOURCE_SHA) (commit \`${SOURCE_SHA:0:7}\`)."
             echo
+            echo "Includes **AirLLM Studio $STUDIO_VERSION**: the AirLLM desktop app, the \`airllm\` CLI (serve, pull, run, list) and an Ollama- and OpenAI-compatible API on port 11435."
             echo "Self-contained: each package bundles its own Python, CPU-only PyTorch, transformers and AirLLM."
             echo
             echo "| Platform | File |"
@@ -337,10 +363,14 @@ jobs:
             echo '```sh'
             echo 'sudo apt install ./airllm_*_amd64.deb      # Debian / Ubuntu'
             echo 'sudo dnf install ./airllm-*.x86_64.rpm     # Fedora / RHEL / Rocky / Alma'
-            echo 'airllm-python -c "import airllm; print(airllm.AutoModel)"'
+            echo 'airllm app                                  # or "AirLLM" in the app menu'
+            echo 'airllm run HuggingFaceTB/SmolLM2-135M-Instruct "Hello"'
             echo 'sudo airllm-enable-cuda                    # optional: switch to CUDA PyTorch'
+            echo 'sudo systemctl enable --now airllm         # optional: run the server as a service'
             echo '```'
-            echo "Windows: run the installer, then use \`airllm-python\` / \`airllm-enable-cuda\` from a new terminal (or the *AirLLM Command Prompt* shortcut)."
+            echo "Windows: run the installer and open **AirLLM** from the Start menu (tray icon while it runs). \`airllm\`, \`airllm-python\` and \`airllm-enable-cuda\` work in a new terminal."
+            echo
+            echo "Other apps can use your models through the Ollama API at \`http://127.0.0.1:11435\` or the OpenAI API at \`http://127.0.0.1:11435/v1\`."
             echo
             echo "### Verify"
             echo "\`sha256sum -c SHA256SUMS\` and \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`"

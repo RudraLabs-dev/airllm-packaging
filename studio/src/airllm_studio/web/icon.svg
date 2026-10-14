@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>AirLLM</title>
+  <rect width="64" height="64" rx="14" fill="#15212C"/>
+  <g fill="#3E5163">
+    <rect x="15" y="13" width="34" height="5" rx="2.5"/>
+    <rect x="15" y="21.5" width="34" height="5" rx="2.5"/>
+    <rect x="15" y="38" width="34" height="5" rx="2.5"/>
+    <rect x="15" y="46.5" width="34" height="5" rx="2.5"/>
+  </g>
+  <rect x="9" y="29.5" width="46" height="5.5" rx="2.75" fill="#35B5AA"/>
+</svg>

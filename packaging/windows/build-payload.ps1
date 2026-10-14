@@ -6,19 +6,23 @@
   Layout produced in -Stage:
     python\               standalone CPython (python-build-standalone) with torch + airllm installed
     airllm-python.cmd     launcher, works from any install location (no absolute paths baked in)
+    airllm.cmd            AirLLM Studio CLI (serve, app, pull, run, ...); airllm.ico for shortcuts
     airllm-enable-cuda.cmd / .ps1   swap CPU PyTorch for a CUDA build after install
     share\airllm\         BUILDINFO, requirements.lock
     LICENSE.txt           AirLLM licence + packaging notice
 
 .EXAMPLE
-  pwsh packaging/windows/build-payload.ps1 -Wheel dist/airllm-4.0.0-py3-none-any.whl -License src/LICENSE -PackageVersion 4.0.0-1
+  pwsh packaging/windows/build-payload.ps1 -Wheel dist/airllm-4.0.0-py3-none-any.whl `
+    -StudioWheel dist/airllm_studio-1.0.0-py3-none-any.whl -License src/LICENSE -PackageVersion 4.0.0-1
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [string] $Wheel,
+    [Parameter(Mandatory)] [string] $StudioWheel,
     [Parameter(Mandatory)] [string] $License,
     [string] $Stage = 'build/stage',
-    [string] $PackageVersion = 'unknown'
+    [string] $PackageVersion = 'unknown',
+    [switch] $SkipE2E
 )
 
 $ErrorActionPreference = 'Stop'
@@ -45,6 +49,7 @@ function Get-Download([string] $Url, [string] $Path) {
 }
 
 $Wheel = (Resolve-Path $Wheel).Path
+$StudioWheel = (Resolve-Path $StudioWheel).Path
 $License = (Resolve-Path $License).Path
 if (Test-Path $Stage) { throw "$Stage already exists; remove it first (refusing to mix two builds)" }
 New-Item -ItemType Directory -Force -Path $Stage, "$Stage/share/airllm" | Out-Null
@@ -76,17 +81,18 @@ try {
     $torchVersion = & $py -c "import importlib.metadata as m; print(m.version('torch'))"
     Set-Content -Path "$work/constraints.txt" -Value "torch==$torchVersion" -Encoding ascii
 
-    Write-Host "==> Installing $(Split-Path -Leaf $Wheel) (torch pinned at $torchVersion)"
-    & $py -m pip install --no-warn-script-location --constraint "$work/constraints.txt" $Wheel
+    Write-Host "==> Installing $(Split-Path -Leaf $Wheel) + $(Split-Path -Leaf $StudioWheel) (torch pinned at $torchVersion)"
+    & $py -m pip install --no-warn-script-location --constraint "$work/constraints.txt" $Wheel $StudioWheel
     & $py -m pip check
     # Pre-compile everything: Program Files is read-only for normal users, so no runtime .pyc cache.
     try { & $py -m compileall -q -j 0 (Join-Path $Stage 'python\Lib') | Out-Null }
     catch { Write-Warning "compileall reported errors (non-fatal): $_" }
 
     # --- 4. Launchers and licence ----------------------------------------------------------
-    foreach ($f in 'airllm-python.cmd', 'airllm-enable-cuda.cmd', 'airllm-shell.cmd') {
+    foreach ($f in 'airllm-python.cmd', 'airllm-enable-cuda.cmd', 'airllm-shell.cmd', 'airllm.cmd') {
         Copy-Item (Join-Path $PSScriptRoot $f) $Stage
     }
+    Copy-Item (Join-Path $packagingDir '..\studio\src\airllm_studio\web\airllm.ico') $Stage
     (Get-Content -Raw (Join-Path $PSScriptRoot 'airllm-enable-cuda.ps1')).Replace('@DEFAULT_CUDA_VARIANT@', $cfg.DEFAULT_CUDA_VARIANT) |
         Set-Content -NoNewline -Encoding utf8 (Join-Path $Stage 'airllm-enable-cuda.ps1')
     $notice = @"
@@ -100,9 +106,11 @@ see python\Lib\site-packages\*\licenses and python\LICENSE.txt.
 
     # --- 5. Build metadata --------------------------------------------------------------
     $airllmVersion = & $py -c "import importlib.metadata as m; print(m.version('airllm'))"
+    $studioVersion = & $py -c "import importlib.metadata as m; print(m.version('airllm-studio'))"
     & $py -m pip freeze --all | Set-Content -Encoding utf8 (Join-Path $Stage 'share\airllm\requirements.lock')
     @(
         "airllm_version=$airllmVersion"
+        "studio_version=$studioVersion"
         "package_version=$PackageVersion"
         "source_repo=$($env:AIRLLM_SOURCE_REPO)"
         "source_ref=$($env:AIRLLM_SOURCE_REF)"
@@ -116,6 +124,11 @@ see python\Lib\site-packages\*\licenses and python\LICENSE.txt.
     # --- 6. Smoke test the staged payload -----------------------------------------------
     Write-Host '==> Smoke testing payload'
     & (Join-Path $Stage 'airllm-python.cmd') (Join-Path $packagingDir 'tests\smoke_test.py') --expect-version $airllmVersion
+    & (Join-Path $Stage 'airllm.cmd') --version
+    if (-not $SkipE2E) {
+        Write-Host '==> AirLLM Studio end-to-end test (tiny local model, offline)'
+        & $py -I (Join-Path $packagingDir 'tests\studio_e2e.py') --airllm (Join-Path $Stage 'airllm.cmd')
+    }
 
     $size = (Get-ChildItem -Recurse -File $Stage | Measure-Object -Sum Length).Sum / 1MB
     Write-Host ("==> Payload ready at {0} ({1:N0} MB)" -f $Stage, $size)
