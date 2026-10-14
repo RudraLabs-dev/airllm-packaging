@@ -1,0 +1,82 @@
+name: Watch upstream AirLLM
+
+# Daily:
+#   1. Fast-forwards the org fork (RudraLabs-dev/airllm) main branch to upstream main, if the
+#      FORK_SYNC_TOKEN secret is set. The fork's main stays a clean mirror; work happens on branches.
+#   2. If upstream has a release tag we have not packaged yet, builds and publishes it via release.yml.
+
+on:
+  schedule:
+    - cron: "37 2 * * *" # 08:07 IST
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: watch-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync-fork:
+    name: Sync org fork with upstream
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: merge-upstream
+        env:
+          GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
+        run: |
+          fork="$(sed -n 's/^FORK_REPO=//p' packaging/versions.env)"
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::FORK_SYNC_TOKEN is not set; skipping. Use 'Sync fork' on https://github.com/$fork or add the secret (see README)."
+            exit 0
+          fi
+          # Fails (409) if the fork's main has commits upstream doesn't — that's intentional: keep main clean.
+          gh api -X POST "repos/$fork/merge-upstream" -f branch=main --jq '"\(.merge_type): \(.message)"'
+
+  check:
+    name: Look for a new upstream release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      needed: ${{ steps.check.outputs.needed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          upstream="$(sed -n 's/^UPSTREAM_REPO=//p' packaging/versions.env)"
+          tag="$(packaging/ci/latest-tag.sh "$upstream")"
+          # Published (non-draft) releases of this repo are tagged v<version>-<revision>.
+          if gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName,isDraft \
+               --jq '.[] | select(.isDraft | not) | .tagName' | grep -qxE "v${tag#v}-[0-9]+"; then
+            needed=false
+            echo "Upstream $tag is already packaged."
+          else
+            needed=true
+            echo "::notice::New upstream release $tag — building packages."
+          fi
+          printf 'tag=%s\nneeded=%s\n' "$tag" "$needed" >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Package ${{ needs.check.outputs.tag }}
+    needs: check
+    if: needs.check.outputs.needed == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      airllm_ref: ${{ needs.check.outputs.tag }}
+      source_repo: lyogavin/airllm
+      pkg_release: "1"
+      publish: true
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write

@@ -1,0 +1,14 @@
+#!/bin/sh
+# Python interpreter bundled with the airllm package (Python + torch + transformers + airllm).
+#   airllm-python my_script.py
+#   airllm-python -m pip list
+# If `airllm-enable-cuda` was run, its CUDA PyTorch overlay takes precedence over the CPU build.
+AIRLLM_HOME=/opt/airllm
+CUDA_SITE=/var/lib/airllm/cuda-site
+
+if [ -d "$CUDA_SITE" ] && [ -z "${AIRLLM_FORCE_CPU:-}" ]; then
+    PYTHONPATH="$CUDA_SITE${PYTHONPATH:+:$PYTHONPATH}"
+    export PYTHONPATH
+fi
+
+exec "$AIRLLM_HOME/python/bin/python3" "$@"

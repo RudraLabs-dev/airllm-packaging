@@ -1,0 +1,63 @@
+name: Lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: shellcheck
+        run: |
+          shellcheck --version | head -2
+          shellcheck packaging/lib/*.sh packaging/linux/*.sh packaging/linux/bin/* \
+                     packaging/linux/scripts/*.sh packaging/ci/*.sh scripts/*.sh
+
+      - name: actionlint
+        env:
+          VERSION: 1.7.12
+          SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          tarball="actionlint_${VERSION}_linux_amd64.tar.gz"
+          curl -fsSLO "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/${tarball}"
+          echo "${SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" actionlint
+          ./actionlint -color
+
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) { Install-Module PSScriptAnalyzer -Force -Scope CurrentUser }
+          $issues = Invoke-ScriptAnalyzer -Path packaging/windows -Recurse -Severity Error, Warning `
+            -ExcludeRule PSAvoidUsingWriteHost, PSUseShouldProcessForStateChangingFunctions
+          $issues | Format-Table -AutoSize
+          if ($issues | Where-Object Severity -eq 'Error') { throw 'PSScriptAnalyzer found errors' }
+
+      - name: Python syntax
+        run: python3 -m py_compile packaging/tests/smoke_test.py
+
+      - name: Version script self-test
+        run: |
+          d="$(mktemp -d)"; mkdir "$d/air_llm"
+          check() {  # check <setup-version> <is-tag> <expected pkg_version> <expected release_tag>
+            echo "    version=\"$1\"," > "$d/air_llm/setup.py"
+            out="$(REF=x IS_TAG=$2 SHA=abcdef1234 packaging/ci/compute-version.sh "$d" 2>/dev/null)"
+            if ! grep -qx "pkg_version=$3" <<< "$out" || ! grep -qx "release_tag=$4" <<< "$out"; then
+              echo "FAIL for $1 (tag=$2):"; echo "$out"; exit 1
+            fi
+          }
+          check 4.0.0    true  4.0.0       v4.0.0-1
+          check 4.1.0rc1 true  4.1.0~rc1   v4.1.0rc1-1
+          today="$(date -u +%Y%m%d)"
+          check 4.0.0    false "4.0.0+git$today.abcdef1" "v4.0.0+git$today.abcdef1-1"
+          echo "compute-version.sh OK"

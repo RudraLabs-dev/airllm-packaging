@@ -1,0 +1,370 @@
+name: Build & release packages
+
+# Takes AirLLM source (upstream or the org fork), builds self-contained packages and publishes them:
+#   Linux x86_64 + aarch64 : .deb (Debian/Ubuntu) and .rpm (Fedora/RHEL/Rocky/Alma)
+#   Windows x64            : Inno Setup installer (.exe) and portable .zip
+# Every package is install-tested on real distros / a clean Windows runner before release.
+#
+# Triggers
+#   - Actions tab -> "Run workflow"  (pick tag/branch/SHA, source repo, revision, publish on/off)
+#   - watch-upstream.yml             (calls this automatically for every new upstream tag)
+#   - pull requests touching packaging/ (build + test only, never publishes)
+
+on:
+  workflow_dispatch:
+    inputs:
+      airllm_ref:
+        description: "AirLLM tag, branch or commit SHA (empty = latest release tag)"
+        type: string
+        default: ""
+      source_repo:
+        description: "Repository to take the AirLLM code from"
+        type: choice
+        options: [lyogavin/airllm, RudraLabs-dev/airllm]
+        default: lyogavin/airllm
+      pkg_release:
+        description: "Package revision; bump to re-release the same AirLLM version"
+        type: string
+        default: "1"
+      publish:
+        description: "Publish a GitHub Release (untick = build and test only)"
+        type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      airllm_ref: { type: string, default: "" }
+      source_repo: { type: string, default: lyogavin/airllm }
+      pkg_release: { type: string, default: "1" }
+      publish: { type: boolean, default: true }
+  pull_request:
+    paths:
+      - "packaging/**"
+      - ".github/workflows/release.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packages-${{ github.event.pull_request.number || inputs.airllm_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  prepare:
+    name: Resolve source & build wheel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      source_repo: ${{ steps.resolve.outputs.source_repo }}
+      ref: ${{ steps.resolve.outputs.ref }}
+      sha: ${{ steps.resolve.outputs.sha }}
+      airllm_version: ${{ steps.wheel.outputs.airllm_version }}
+      pkg_version: ${{ steps.version.outputs.pkg_version }}
+      pkg_release: ${{ steps.version.outputs.pkg_release }}
+      tag_version: ${{ steps.version.outputs.tag_version }}
+      numeric_version: ${{ steps.version.outputs.numeric_version }}
+      release_tag: ${{ steps.version.outputs.release_tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve ref
+        id: resolve
+        env:
+          SOURCE_REPO: ${{ inputs.source_repo || 'lyogavin/airllm' }}
+          REQUESTED_REF: ${{ inputs.airllm_ref }}
+        run: packaging/ci/resolve-ref.sh >> "$GITHUB_OUTPUT"
+
+      - name: Check out AirLLM source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.resolve.outputs.source_repo }}
+          ref: ${{ steps.resolve.outputs.sha }}
+          path: src
+          persist-credentials: false
+
+      - name: Compute versions
+        id: version
+        env:
+          REF: ${{ steps.resolve.outputs.ref }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+          IS_TAG: ${{ steps.resolve.outputs.is_tag }}
+          PKG_RELEASE: ${{ inputs.pkg_release || '1' }}
+        run: packaging/ci/compute-version.sh src | tee -a "$GITHUB_OUTPUT"
+
+      - name: Build wheel and sdist
+        id: wheel
+        run: |
+          # Same step as upstream's PyPI workflow: ship the top-level README inside the package.
+          cp src/README.md src/air_llm/README.md
+          pipx run --spec build==1.6.1 pyproject-build --wheel --sdist --outdir dist src/air_llm
+          cp src/LICENSE dist/LICENSE-airllm.txt
+          wheel="$(ls dist/*.whl)"
+          version="$(basename "$wheel" | cut -d- -f2)"
+          echo "airllm_version=$version" >> "$GITHUB_OUTPUT"
+          ls -l dist
+
+      - name: Summary
+        env:
+          O: ${{ toJSON(steps.version.outputs) }}
+          SRC: ${{ steps.resolve.outputs.source_repo }}@${{ steps.resolve.outputs.ref }} (${{ steps.resolve.outputs.sha }})
+        run: |
+          {
+            echo "### AirLLM packaging plan"
+            echo "- Source: \`$SRC\`"
+            jq -r 'to_entries[] | "- \(.key): `\(.value)`"' <<< "$O"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: airllm-dist
+          path: dist/
+          if-no-files-found: error
+
+  linux:
+    name: Linux ${{ matrix.arch }} (.deb + .rpm)
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      PKG_VERSION: ${{ needs.prepare.outputs.pkg_version }}
+      PKG_RELEASE: ${{ needs.prepare.outputs.pkg_release }}
+      AIRLLM_SOURCE_REPO: ${{ needs.prepare.outputs.source_repo }}
+      AIRLLM_SOURCE_REF: ${{ needs.prepare.outputs.ref }}
+      AIRLLM_SOURCE_SHA: ${{ needs.prepare.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: airllm-dist
+          path: dist
+
+      - name: Build payload in /opt/airllm
+        run: |
+          sudo --preserve-env=PKG_VERSION,AIRLLM_SOURCE_REPO,AIRLLM_SOURCE_REF,AIRLLM_SOURCE_SHA \
+            packaging/linux/build-payload.sh --arch "${{ matrix.arch }}" --wheel "$(ls dist/*.whl)"
+
+      - name: Build .deb and .rpm
+        run: packaging/linux/build-packages.sh --version "$PKG_VERSION" --release "$PKG_RELEASE" --arch "${{ matrix.arch }}" --out out
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages-linux-${{ matrix.arch }}
+          path: out/
+          if-no-files-found: error
+          compression-level: 0 # already zstd-compressed
+
+  test-linux:
+    name: Test ${{ matrix.image }} (${{ matrix.arch }})
+    needs: [prepare, linux]
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64]
+        image:
+          - debian:12
+          - debian:13
+          - ubuntu:22.04
+          - ubuntu:24.04
+          - fedora:latest
+          - rockylinux/rockylinux:9
+          - almalinux:8          # oldest supported: glibc 2.28
+        include:
+          - { arch: aarch64, image: ubuntu:24.04 }
+          - { arch: aarch64, image: rockylinux/rockylinux:9 }
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: packages-linux-${{ matrix.arch }}
+          path: pkgs
+
+      - name: Install, smoke test, uninstall
+        env:
+          IMAGE: ${{ matrix.image }}
+          EXPECT: ${{ needs.prepare.outputs.airllm_version }}
+        run: |
+          docker run --rm \
+            -v "$PWD/pkgs:/pkgs:ro" -v "$PWD/packaging:/packaging:ro" \
+            "$IMAGE" sh /packaging/ci/test-install.sh /pkgs "$EXPECT"
+
+  windows:
+    name: Windows x64 (installer + zip)
+    needs: prepare
+    runs-on: windows-2025
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      WIN_VERSION: ${{ needs.prepare.outputs.tag_version }}-${{ needs.prepare.outputs.pkg_release }}
+      NUMERIC_VERSION: ${{ needs.prepare.outputs.numeric_version }}
+      AIRLLM_VERSION: ${{ needs.prepare.outputs.airllm_version }}
+      AIRLLM_SOURCE_REPO: ${{ needs.prepare.outputs.source_repo }}
+      AIRLLM_SOURCE_REF: ${{ needs.prepare.outputs.ref }}
+      AIRLLM_SOURCE_SHA: ${{ needs.prepare.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: airllm-dist
+          path: dist
+
+      - name: Build payload
+        run: |
+          ./packaging/windows/build-payload.ps1 -Wheel (Get-Item dist/*.whl).FullName `
+            -License dist/LICENSE-airllm.txt -Stage build/AirLLM -PackageVersion $env:WIN_VERSION
+
+      - name: Locate or install Inno Setup 6
+        run: |
+          $candidates = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup --no-progress -y
+            $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) { throw 'ISCC.exe not found after installing Inno Setup' }
+          "ISCC=$iscc" >> $env:GITHUB_ENV
+
+      - name: Build installer and portable zip
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          New-Item -ItemType Directory -Force out | Out-Null
+          & $env:ISCC /Qp "/DAppVersion=$env:WIN_VERSION" "/DNumericVersion=$env:NUMERIC_VERSION" `
+            "/DSourceDir=$PWD\build\AirLLM" "/DOutputDir=$PWD\out" packaging\windows\airllm.iss
+          7z a -tzip -mx=5 -bso0 -bsp0 "out\AirLLM-$env:WIN_VERSION-windows-x64.zip" ".\build\AirLLM"
+          Get-ChildItem out | Format-Table Name, @{ n = 'MB'; e = { [math]::Round($_.Length / 1MB) } }
+
+      - name: Install test (silent install, smoke test, uninstall)
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $dir = 'C:\AirLLM-test'
+          $setup = (Get-Item out\*.exe).FullName
+          $p = Start-Process $setup -Wait -PassThru -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$dir", '/TASKS=addtopath', '/LOG=install.log'
+          if ($p.ExitCode -ne 0) { Get-Content install.log -Tail 40; throw "installer exited with $($p.ExitCode)" }
+
+          & "$dir\airllm-python.cmd" packaging\tests\smoke_test.py --expect-version $env:AIRLLM_VERSION
+          & "$dir\airllm-enable-cuda.cmd" status
+          if ([Environment]::GetEnvironmentVariable('Path', 'Machine') -notlike "*$dir*") { throw "installer did not add $dir to PATH" }
+
+          $u = Start-Process "$dir\unins000.exe" -Wait -PassThru -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+          if ($u.ExitCode -ne 0) { throw "uninstaller exited with $($u.ExitCode)" }
+          for ($i = 0; $i -lt 30 -and (Test-Path $dir); $i++) { Start-Sleep 2 }   # uninstaller finishes from %TEMP%
+          if (Test-Path $dir) { Get-ChildItem -Recurse $dir | Select-Object -First 20; throw "$dir left behind after uninstall" }
+          if ([Environment]::GetEnvironmentVariable('Path', 'Machine') -like "*$dir*") { throw "uninstaller left $dir on PATH" }
+          'Windows install test passed'
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: packages-windows-x64
+          path: out/
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: Publish GitHub Release
+    needs: [prepare, linux, test-linux, windows]
+    if: github.event_name != 'pull_request' && inputs.publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write      # create the release
+      id-token: write      # sign build provenance
+      attestations: write  # store build provenance
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.prepare.outputs.release_tag }}
+      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+      AIRLLM_VERSION: ${{ needs.prepare.outputs.airllm_version }}
+      PKG_RELEASE: ${{ needs.prepare.outputs.pkg_release }}
+      SOURCE_REPO: ${{ needs.prepare.outputs.source_repo }}
+      SOURCE_REF: ${{ needs.prepare.outputs.ref }}
+      SOURCE_SHA: ${{ needs.prepare.outputs.sha }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: packages-*
+          path: release
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: release
+        run: |
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Build provenance attestation
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release/*
+
+      - name: Write release notes
+        run: |
+          row() { for f in release/$2; do if [ -e "$f" ]; then echo "| $1 | \`$(basename "$f")\` |"; fi; done; }
+          {
+            echo "AirLLM **$AIRLLM_VERSION**, package revision $PKG_RELEASE — built from [\`$SOURCE_REPO@$SOURCE_REF\`](https://github.com/$SOURCE_REPO/tree/$SOURCE_SHA) (commit \`${SOURCE_SHA:0:7}\`)."
+            echo
+            echo "Self-contained: each package bundles its own Python, CPU-only PyTorch, transformers and AirLLM."
+            echo
+            echo "| Platform | File |"
+            echo "|---|---|"
+            row "Debian 12+ / Ubuntu 22.04+ (x86_64)" "*_amd64.deb"
+            row "Debian 12+ / Ubuntu 22.04+ (arm64)" "*_arm64.deb"
+            row "Fedora / RHEL / Rocky / Alma 8+ (x86_64)" "*.x86_64.rpm"
+            row "Fedora / RHEL / Rocky / Alma 8+ (aarch64)" "*.aarch64.rpm"
+            row "Windows 10/11 x64 installer" "*-setup-x64.exe"
+            row "Windows x64 portable" "*-windows-x64.zip"
+            echo
+            echo "### Install"
+            echo '```sh'
+            echo 'sudo apt install ./airllm_*_amd64.deb      # Debian / Ubuntu'
+            echo 'sudo dnf install ./airllm-*.x86_64.rpm     # Fedora / RHEL / Rocky / Alma'
+            echo 'airllm-python -c "import airllm; print(airllm.AutoModel)"'
+            echo 'sudo airllm-enable-cuda                    # optional: switch to CUDA PyTorch'
+            echo '```'
+            echo "Windows: run the installer, then use \`airllm-python\` / \`airllm-enable-cuda\` from a new terminal (or the *AirLLM Command Prompt* shortcut)."
+            echo
+            echo "### Verify"
+            echo "\`sha256sum -c SHA256SUMS\` and \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`"
+          } > notes.md
+          cat notes.md
+
+      - name: Create or update the release
+        run: |
+          state="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo missing)"
+          case "$state" in
+            false)
+              echo "::error::Release $TAG is already published. Re-run with a higher pkg_release to ship a new build."
+              exit 1 ;;
+            true)
+              echo "Reusing draft $TAG from an earlier attempt"
+              gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+              gh release upload "$TAG" release/* --repo "$GITHUB_REPOSITORY" --clobber ;;
+            *)
+              flags=()
+              [ "$PRERELEASE" = true ] && flags+=(--prerelease)
+              gh release create "$TAG" release/* --repo "$GITHUB_REPOSITORY" --draft \
+                --target "$GITHUB_SHA" --title "AirLLM $AIRLLM_VERSION (packages rev $PKG_RELEASE)" \
+                --notes-file notes.md "${flags[@]}" ;;
+          esac
+          # Assets are all uploaded; flip to public in one step so nobody sees a half-filled release.
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+          echo "### Released [$TAG]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG)" >> "$GITHUB_STEP_SUMMARY"

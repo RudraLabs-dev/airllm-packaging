@@ -1,0 +1,52 @@
+#!/bin/sh
+# Switch the bundled CPU-only PyTorch to a CUDA build, without touching package-owned files.
+#
+#   sudo airllm-enable-cuda              # CUDA variant @DEFAULT_CUDA_VARIANT@ (default)
+#   sudo airllm-enable-cuda cu126        # any variant served at download.pytorch.org/whl/<variant>
+#   sudo airllm-enable-cuda --disable    # back to the bundled CPU build
+#   airllm-enable-cuda --status
+#
+# The CUDA wheels go to /var/lib/airllm/cuda-site, which `airllm-python` puts first on the
+# path. Package upgrades never overwrite it; re-run this after an upgrade that bumps torch.
+set -eu
+
+PY=/opt/airllm/python/bin/python3
+STATE_DIR=/var/lib/airllm
+CUDA_SITE="$STATE_DIR/cuda-site"
+variant="${1:-@DEFAULT_CUDA_VARIANT@}"
+
+status() {
+    if [ -d "$CUDA_SITE" ]; then
+        echo "CUDA overlay: $(cat "$CUDA_SITE/.airllm-variant" 2>/dev/null || echo unknown) at $CUDA_SITE"
+    else
+        echo "CUDA overlay: not installed (using bundled CPU build)"
+    fi
+    /opt/airllm/bin/airllm-python -c 'import torch; print("torch", torch.__version__, "| CUDA available:", torch.cuda.is_available())'
+}
+
+case "$variant" in
+    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    --status|status)  status; exit 0 ;;
+    --disable|disable)
+        [ "$(id -u)" -eq 0 ] || { echo "error: run with sudo" >&2; exit 1; }
+        rm -rf "$CUDA_SITE"; echo "CUDA overlay removed."; status; exit 0 ;;
+    cu[0-9]*|rocm[0-9]*) ;;
+    *) echo "error: unknown variant '$variant' (expected e.g. cu126, cu128, rocm6.4)" >&2; exit 2 ;;
+esac
+
+[ "$(id -u)" -eq 0 ] || { echo "error: run with sudo" >&2; exit 1; }
+
+# Match the bundled torch version so transformers/airllm see the same API they were tested with.
+torch_version="$("$PY" -c 'import importlib.metadata as m; print(m.version("torch").split("+")[0])')"
+echo "Installing torch==$torch_version ($variant) into $CUDA_SITE ..."
+
+tmp="$CUDA_SITE.new"
+rm -rf "$tmp"
+mkdir -p "$STATE_DIR"
+PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1 PIP_ROOT_USER_ACTION=ignore \
+    "$PY" -m pip install --target "$tmp" \
+        --index-url "https://download.pytorch.org/whl/$variant" "torch==$torch_version"
+echo "$variant" > "$tmp/.airllm-variant"
+rm -rf "$CUDA_SITE"
+mv "$tmp" "$CUDA_SITE"
+status

@@ -1,0 +1,55 @@
+# nfpm config: one payload -> airllm_<ver>_<arch>.deb and airllm-<ver>.<arch>.rpm
+# Values in ${...} come from the environment (see packaging/linux/build-packages.sh).
+name: ${PKG_NAME}
+arch: ${NFPM_ARCH}
+platform: linux
+version: ${PKG_VERSION}
+version_schema: none
+release: ${PKG_RELEASE}
+epoch: ""
+section: python
+priority: optional
+maintainer: ${PKG_MAINTAINER}
+vendor: ${PKG_VENDOR}
+homepage: ${PKG_HOMEPAGE}
+license: Apache-2.0
+description: |-
+  Run 70B+ large language models on a single small GPU (AirLLM).
+  Self-contained build: bundles its own CPython, CPU-only PyTorch, transformers and
+  AirLLM under /opt/airllm, so it does not touch the system Python. Use
+  `airllm-python` to run scripts, and `sudo airllm-enable-cuda` to switch PyTorch to
+  a CUDA build. Packaged by RudraLabs from https://github.com/lyogavin/airllm
+
+contents:
+  - src: ${PAYLOAD_DIR}
+    dst: /opt/airllm
+    type: tree
+  - src: /opt/airllm/bin/airllm-python
+    dst: /usr/bin/airllm-python
+    type: symlink
+  - src: /opt/airllm/bin/airllm-enable-cuda
+    dst: /usr/bin/airllm-enable-cuda
+    type: symlink
+  - dst: /var/lib/airllm
+    type: dir
+    file_info:
+      mode: 0755
+
+scripts:
+  postinstall: ${PACKAGING_DIR}/linux/scripts/postinstall.sh
+  postremove: ${PACKAGING_DIR}/linux/scripts/postremove.sh
+
+overrides:
+  deb:
+    depends:
+      - libc6 (>= 2.28)
+  rpm:
+    depends:
+      - glibc >= 2.28
+
+deb:
+  compression: zstd
+rpm:
+  compression: zstd
+  group: Development/Languages
+  summary: Run 70B+ LLMs on a single small GPU (self-contained AirLLM)
