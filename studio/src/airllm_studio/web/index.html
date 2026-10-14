@@ -130,7 +130,7 @@
                 <option value="8bit">8-bit</option>
                 <option value="4bit">4-bit (fastest)</option>
               </select></label>
-              <label class="field">Unload an idle model after (minutes, 0 = never)<input name="keep_alive_minutes" type="number" min="0" max="10080"></label>
+              <label class="field" title="0 keeps the model loaded until you unload it">Unload when idle (minutes)<input name="keep_alive_minutes" type="number" min="0" max="10080"></label>
             </div>
             <p class="help" id="hardwareHelp"></p>
           </section>
