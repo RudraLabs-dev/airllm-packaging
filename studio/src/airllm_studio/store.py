@@ -38,6 +38,37 @@ class StoreError(Exception):
     """A problem worth showing to the user as-is."""
 
 
+class RemoteCodeRequired(StoreError):
+    """The model ships Python code (config auto_map) and the user has not allowed running it."""
+
+
+def remote_code_refs(folder: Path) -> list[str]:
+    """Classes a model wants loaded from its own code: the auto_map entries of its config.json and
+    tokenizer_config.json. transformers imports (= runs) these when trust_remote_code is on, which
+    AirLLM always passes; an entry may even point at code in another Hub repo ("org/repo--mod.Cls")."""
+    refs: set[str] = set()
+    for name in ("config.json", "tokenizer_config.json"):
+        try:
+            data = json.loads((folder / name).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        auto_map = data.get("auto_map") if isinstance(data, dict) else None
+        if isinstance(auto_map, dict):
+            for value in auto_map.values():
+                values = value if isinstance(value, (list, tuple)) else [value]
+                refs.update(str(v) for v in values if v)
+    return sorted(refs)
+
+
+def check_remote_code(folder: Path, name: str, trusted: bool) -> None:
+    refs = remote_code_refs(folder)
+    if refs and not trusted:
+        raise RemoteCodeRequired(
+            f"This model ships its own Python code ({', '.join(refs[:3])}), which AirLLM Studio only runs "
+            f"if you allow it. Only do that for publishers you trust: 'Allow custom code' in the app, or "
+            f"airllm pull {name} --trust-remote-code")
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -65,6 +96,8 @@ class Manifest:
     context_length: int = 0
     dtype: str = ""
     original_deleted: bool = False
+    trust_remote_code: bool = False     # the user allowed this model's own Python code to run
+    needs_remote_code: bool = False     # the last pull stopped because the model ships code
     created_at: str = field(default_factory=now_iso)
     modified_at: str = field(default_factory=now_iso)
 
@@ -219,15 +252,22 @@ class ModelStore:
             pass
 
     # --- pull ----------------------------------------------------------------------------
-    def pull(self, name: str) -> PullJob:
+    def pull(self, name: str, trust_remote_code: bool = False, allow_local: bool = True) -> PullJob:
+        """Start (or join) a pull. trust_remote_code: let a model that ships Python code run it.
+        allow_local: accept a folder on this computer as the source (False for remote API callers)."""
         name = name.strip()
         if not name:
             raise StoreError("model name is empty")
+        looks_local = name.startswith(("/", "~", ".", "\\")) or (len(name) > 1 and name[1] == ":")
+        if not allow_local and looks_local:
+            raise StoreError("Importing a model folder is only allowed from this computer.")
         local = Path(name).expanduser()
-        is_local = local.is_dir()
+        is_local = allow_local and local.is_dir()
         display = f"local/{local.resolve().name}" if is_local else name
         if not is_local and name.count("/") != 1:
             raise StoreError("Use a Hugging Face repo id like 'Qwen/Qwen3-8B', or a local model folder.")
+        previous = self.get(display)
+        trusted = bool(trust_remote_code or (previous and previous.trust_remote_code))
         with self._lock:
             existing = self.jobs.get(display)
             if existing and not existing.done:
@@ -236,7 +276,7 @@ class ModelStore:
             self.jobs[display] = job
         target = self._run_local_import if is_local else self._run_hf_pull
         arg = local.resolve() if is_local else name
-        threading.Thread(target=self._run_job, args=(job, target, arg), name=f"pull-{display}",
+        threading.Thread(target=self._run_job, args=(job, target, arg, trusted), name=f"pull-{display}",
                          daemon=True).start()
         return job
 
@@ -247,14 +287,19 @@ class ModelStore:
             return True
         return False
 
-    def _run_job(self, job: PullJob, target, arg) -> None:
+    def _run_job(self, job: PullJob, target, arg, trusted: bool = False) -> None:
         manifest = self.get(job.name) or Manifest(name=job.name)
+        manifest.trust_remote_code, manifest.needs_remote_code = trusted, False
         try:
             target(job, manifest, arg)
             manifest.status, manifest.error = "ready", ""
             manifest.size_on_disk = self.disk_usage(manifest)
             self.save(manifest)
             job.update(phase="success", message="Ready", completed=job.total)
+        except RemoteCodeRequired as exc:
+            manifest.status, manifest.error, manifest.needs_remote_code = "error", str(exc), True
+            self.save(manifest)
+            job.update(phase="error", message=str(exc), error=str(exc))
         except _Cancelled:
             manifest.status, manifest.error = "error", "Cancelled. Pull again to resume."
             self.save(manifest)
@@ -273,7 +318,8 @@ class ModelStore:
         hub = self._dir("hub")
         job.update(phase="resolving", message="Looking up model on Hugging Face")
         info = HfApi(token=token).model_info(repo, files_metadata=True, token=token)
-        files = select_files([(s.rfilename, s.size or 0) for s in info.siblings or []])
+        files = select_files([(s.rfilename, s.size or 0) for s in info.siblings or []],
+                             include_code=manifest.trust_remote_code)
         manifest.source, manifest.repo, manifest.revision = "hf", info.id, info.sha or ""
         manifest.name = job.name
         manifest.status, manifest.compression = "downloading", self._compression()
@@ -287,6 +333,9 @@ class ModelStore:
         snapshot: Path | None = None
         for filename, size in files:
             job.check_cancelled()
+            if snapshot is not None and filename.endswith(WEIGHT_SUFFIXES):
+                # Config files come first: refuse a code-shipping model before the big download.
+                check_remote_code(snapshot, job.name, manifest.trust_remote_code)
             job.update(message=f"Downloading {filename}")
             stop = threading.Event()
             watcher = threading.Thread(target=self._watch_partial, daemon=True,
@@ -331,6 +380,9 @@ class ModelStore:
     def _prepare(self, job: PullJob, manifest: Manifest) -> None:
         job.check_cancelled()
         snapshot = Path(manifest.snapshot_path)
+        # AirLLM's layer split loads the config with trust_remote_code=True: gate it here, for
+        # Hugging Face pulls and local folders alike.
+        check_remote_code(snapshot, manifest.name, manifest.trust_remote_code)
         fill_details(manifest, snapshot)
         manifest.status = "preparing"
         manifest.layers_path = str(self._dir("layers") / slugify(manifest.name))
@@ -402,9 +454,10 @@ class ModelStore:
 # ---------------------------------------------------------------------------------------------
 # Helpers (module level so tests can exercise them directly)
 # ---------------------------------------------------------------------------------------------
-def select_files(files: list[tuple[str, int]]) -> list[tuple[str, int]]:
+def select_files(files: list[tuple[str, int]], include_code: bool = False) -> list[tuple[str, int]]:
     """Pick what AirLLM needs from a repo listing: top-level config/tokenizer files plus one weight
-    format (safetensors preferred). Sub-folders (original/, onnx/, gguf/, ...) are skipped."""
+    format (safetensors preferred). Sub-folders (original/, onnx/, gguf/, ...) are skipped, and so
+    is the model's own Python code (*.py) unless the user allowed running it."""
     top = [(n, s) for n, s in files if "/" not in n]
     safetensors = [(n, s) for n, s in top if n.endswith(".safetensors")
                    or n == "model.safetensors.index.json"]
@@ -416,7 +469,8 @@ def select_files(files: list[tuple[str, int]]) -> list[tuple[str, int]]:
             raise StoreError("This repo only has GGUF files. AirLLM needs the original Hugging Face "
                              "checkpoint (safetensors), e.g. the non-GGUF repo of the same model.")
         raise StoreError("No .safetensors or .bin weights found in this repo.")
-    sidecars = [(n, s) for n, s in top if n in SIDECAR_FILES or n.endswith(SIDECAR_SUFFIXES)]
+    sidecars = [(n, s) for n, s in top if (n in SIDECAR_FILES or n.endswith(SIDECAR_SUFFIXES))
+                and (include_code or not n.endswith(".py"))]
     if not any(n == "config.json" for n, _ in sidecars):
         raise StoreError("This repo has no config.json, so it is not a transformers model.")
     chosen = {n: s for n, s in sidecars + weights}

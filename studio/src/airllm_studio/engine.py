@@ -10,10 +10,11 @@ import queue
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Iterator
 
 from .config import SettingsStore
-from .store import Manifest, ModelStore
+from .store import Manifest, ModelStore, RemoteCodeRequired, check_remote_code
 
 log = logging.getLogger("airllm_studio.engine")
 
@@ -116,6 +117,11 @@ class Engine:
         if self.model is not None and self.model_name == name:
             return
         manifest = self._manifest(name)
+        if manifest.snapshot_path:
+            try:
+                check_remote_code(Path(manifest.snapshot_path), manifest.name, manifest.trust_remote_code)
+            except RemoteCodeRequired as exc:      # e.g. a model pulled before this check existed
+                raise EngineError(str(exc)) from None
         self._unload()
         self.state = "loading"
         try:

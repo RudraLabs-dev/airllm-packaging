@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "airllm-studio"
-version = "1.0.0"
+version = "1.0.1"
 description = "AirLLM Studio: local server, CLI and desktop app for running large LLMs with AirLLM"
 readme = "README.md"
 license = "Apache-2.0"

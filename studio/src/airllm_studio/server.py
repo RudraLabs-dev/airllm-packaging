@@ -24,8 +24,9 @@ from fastapi.staticfiles import StaticFiles
 from . import __version__
 from .catalog import CATALOG
 from .chats import ChatStore
-from .config import SettingsStore, data_dir, logs_dir
+from .config import SettingsStore, data_dir, logs_dir, parse_host
 from .engine import Engine, EngineError, GenOptions
+from .security import allowed_host_names, api_key_matches, env_list, normalize_origin, request_allowed
 from .store import ModelStore, StoreError
 
 log = logging.getLogger("airllm_studio.server")
@@ -142,8 +143,11 @@ class Studio:
         self.shutdown_hook: Callable[[], None] | None = None
 
 
-def create_app(studio: Studio | None = None, keepalive: bool = True) -> FastAPI:
+def create_app(studio: Studio | None = None, keepalive: bool = True, bind_host: str | None = None) -> FastAPI:
+    """bind_host: the host the server listens on (default from AIRLLM_HOST); a name given here is
+    accepted in the Host header in addition to loopback, IP addresses and AIRLLM_ALLOWED_HOSTS."""
     studio = studio or Studio()
+    allowed_hosts = allowed_host_names(bind_host if bind_host is not None else parse_host()[0])
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -163,18 +167,24 @@ def create_app(studio: Studio | None = None, keepalive: bool = True) -> FastAPI:
                   description="Ollama-compatible (/api) and OpenAI-compatible (/v1) API for AirLLM.")
     app.state.studio = studio
 
-    origins = [o.strip() for o in os.environ.get("AIRLLM_ORIGINS", "").split(",") if o.strip()]
+    origins = env_list("AIRLLM_ORIGINS")
+    extra_origins = frozenset(normalize_origin(o) for o in origins)
     if origins:
         app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["*"],
                            allow_headers=["*"], allow_credentials=False)
 
+    # Registered after CORS, so it runs first: nothing reaches a handler (or CORS) unchecked.
     @app.middleware("http")
-    async def auth(request: Request, call_next):
+    async def guard(request: Request, call_next):
         path = request.url.path
         protected = path.startswith(("/api", "/v1"))
+        ok, status, message = request_allowed(request.headers, allowed_hosts, extra_origins, protected)
+        if not ok:
+            log.warning("refused %s %s: %s (Host=%s, Origin=%s)", request.method, path, message,
+                        request.headers.get("host"), request.headers.get("origin"))
+            return JSONResponse({"error": message}, status_code=status)
         if studio.api_key and protected and not _is_loopback(request):
-            header = request.headers.get("authorization", "")
-            if header != f"Bearer {studio.api_key}":
+            if not api_key_matches(request.headers.get("authorization", ""), studio.api_key):
                 return JSONResponse({"error": "missing or invalid API key"}, status_code=401)
         return await call_next(request)
 
@@ -207,6 +217,12 @@ def create_app(studio: Studio | None = None, keepalive: bool = True) -> FastAPI:
         if system and not any(m["role"] == "system" for m in messages):
             return [{"role": "system", "content": system}] + messages
         return messages
+
+    def start_pull(request: Request, name: str, body: dict):
+        # Model code only runs when the caller explicitly allows it; folders on this computer can
+        # only be imported by local callers (a remote API client must not read arbitrary paths).
+        return studio.store.pull(name, trust_remote_code=body.get("trust_remote_code") is True,
+                                 allow_local=_is_loopback(request))
 
     def require_model(name: str | None) -> str:
         if not name:
@@ -278,7 +294,7 @@ def create_app(studio: Studio | None = None, keepalive: bool = True) -> FastAPI:
         name = body.get("model") or body.get("name")
         if not name:
             raise HTTPException(400, "model is required")
-        job = studio.store.pull(name)
+        job = start_pull(request, name, body)
         stream = body.get("stream", True)
 
         def ollama_events() -> Iterator[dict]:
@@ -589,7 +605,7 @@ def create_app(studio: Studio | None = None, keepalive: bool = True) -> FastAPI:
     @app.post("/api/studio/models/pull")
     async def studio_pull(request: Request):
         body = await request.json()
-        job = studio.store.pull(body.get("name", ""))
+        job = start_pull(request, body.get("name", ""), body)
         return job.state()
 
     @app.post("/api/studio/models/cancel")
